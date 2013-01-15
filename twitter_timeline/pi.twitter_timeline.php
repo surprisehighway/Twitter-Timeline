@@ -30,7 +30,7 @@ $plugin_info = array(
 						'pi_version'		=> '1.4.9',
 						'pi_author'			=> 'ExpressionEngine Dev Team',
 						'pi_author_url'		=> 'http://expressionengine.com/',
-						'pi_description'	=> 'Allows you to display information from Twitter timelines',
+						'pi_description'	=> 'Allows you to display information from Twitter timelines. Modified to optionally use OAuth.',
 						'pi_usage'			=> Twitter_timeline::usage()
 					);
 					
@@ -57,6 +57,12 @@ class Twitter_timeline {
 	var $entities		= array('user_mentions' => FALSE, 'urls' => FALSE, 'hashtags' => FALSE, 'media' => FALSE);
 	var $use_stale;
 	var $time_limit		= 5;  // Max time in seconds to allow curl/fsockopen connection.
+
+	// oAuth settings
+	var $consumer_key        = '';
+	var $consumer_secret     = '';
+	var $access_token        = '';
+	var $access_token_secret = '';
 	
 	/**
 	 * Constructor
@@ -703,7 +709,7 @@ class Twitter_timeline {
 	/**
 	 * curl Fetch
 	 *
-	 * Fetch Twitter statuses using cURL
+	 * Fetch Twitter statuses using cURL or TwitterOAuth Library
 	 *
 	 * @access	public
 	 * @param	string
@@ -711,17 +717,51 @@ class Twitter_timeline {
 	 */
 	function _curl_fetch($url)
 	{
-		$ch = curl_init(); 
-		curl_setopt($ch, CURLOPT_URL, $url); 
-		curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-		curl_setopt($ch, CURLOPT_FRESH_CONNECT, 1);
+		$data = '';
 
-		// The maximum number of seconds to allow cURL functions to execute. 
-		curl_setopt($ch, CURLOPT_TIMEOUT, $this->time_limit);
-		
-		$data = curl_exec($ch);
-		
-		curl_close($ch);
+		// Do OAuth request if settings are entered and a screen_name tag param was passed
+		// https://dev.twitter.com/docs/auth/oauth/single-user-with-examples
+		// https://github.com/abraham/twitteroauth
+		if($this->consumer_key != '' && $this->consumer_secret != '' && $this->access_token  != '' &&  $this->access_token_secret  != '' && isset($this->parameters['screen_name']))
+		{
+			if (! class_exists('TwitterOAuth'))
+			{
+				require_once PATH_THIRD.'twitter_timeline/lib/twitteroauth.php';
+			}
+
+			$connection = new TwitterOAuth($this->consumer_key, $this->consumer_secret, $this->access_token, $this->access_token_secret);
+			
+			$connection->format = 'xml';
+			
+			$data = $connection->get("statuses/user_timeline", $this->parameters);
+
+			$this->EE->TMPL->log_item("Twitter Timeline connecting using OAuth.");
+
+			if(isset($connection->http_header))
+			{
+				// Log some rate limit info while we're here to help for debugging
+				$rate_limit = $connection->http_header['x_ratelimit_limit'];
+				$rate_limit_remaining = $connection->http_header['x_ratelimit_remaining'];
+				$rate_limit_reset = $connection->http_header['x_ratelimit_reset'];
+
+				$this->EE->TMPL->log_item("Twitter Timeline OAuth rate limit is at {$rate_limit_remaining} of {$rate_limit}: Next reset at {$this->EE->localize->set_human_time($rate_limit_reset)}");
+			}
+		}
+		// Default curl request
+		else
+		{
+			$ch = curl_init(); 
+			curl_setopt($ch, CURLOPT_URL, $url); 
+			curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+			curl_setopt($ch, CURLOPT_FRESH_CONNECT, 1);
+
+			// The maximum number of seconds to allow cURL functions to execute. 
+			curl_setopt($ch, CURLOPT_TIMEOUT, $this->time_limit);
+			
+			$data = curl_exec($ch);
+			
+			curl_close($ch);
+		}
 
 		return $data;
 	}
@@ -882,6 +922,7 @@ class Twitter_timeline {
 		------------------
 		CHANGELOG:
 		------------------
+		2013-01-15: Modified by SurpriseHighway to include OAuth authentication.
 		Version 1.4.9 - Add target attributes on the links in tweets.
 		Version 1.4.8 - Made {status_relative_date} fuzzy for more Twitter-like relative dates.
 		Version 1.4.7 - Fixed a bug (#5) where hashtag links would be broken due to XSS cleaning.
