@@ -922,6 +922,7 @@ class Twitter_timeline {
 		------------------
 		CHANGELOG:
 		------------------
+		2013-03-05: Modified by SurpriseHighway to use the Twitter Rest API v1.1 for authenticated requests. Note that unauthenticated requests are about to be retired: https://dev.twitter.com/blog/planning-for-api-v1-retirement
 		2013-01-15: Modified by SurpriseHighway to include OAuth authentication.
 		Version 1.4.9 - Add target attributes on the links in tweets.
 		Version 1.4.8 - Made {status_relative_date} fuzzy for more Twitter-like relative dates.
