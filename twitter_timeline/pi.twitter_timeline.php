@@ -46,7 +46,6 @@ $plugin_info = array(
 class Twitter_timeline {
 	
 	var $return_data	= '';
-	var $base_url		= 'http://api.twitter.com/1/statuses/';
 	var $cache_name		= 'twitter_timeline_cache';
 	var $cache_expired	= FALSE;
 	var $rate_limit_hit = FALSE;
@@ -56,7 +55,7 @@ class Twitter_timeline {
 	var $months			= array('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec');
 	var $entities		= array('user_mentions' => FALSE, 'urls' => FALSE, 'hashtags' => FALSE, 'media' => FALSE);
 	var $use_stale;
-	var $time_limit		= 5;  // Max time in seconds to allow curl/fsockopen connection.
+	var $time_limit		= 5;  // Max time in seconds to allow curl connection.
 
 	// oAuth settings
 	var $consumer_key        = '';
@@ -96,25 +95,24 @@ class Twitter_timeline {
 			}
 		}
 		
-		// timeline type
+		// timeline type - only authenticated user is allowed in v1.1
 
-		$timeline = 'public';
-		$log_extra = '';
-		
-		if ($screen_name)
+		if ( ! $screen_name)
 		{
-			$timeline	= 'user';
-			$log_extra	= "For User {$screen_name}";
-			
-			$this->parameters['screen_name'] = $screen_name;
+			$this->EE->TMPL->log_item("Twitter Timeline: screen_name parameter is required!");
 		}
+		
+		$timeline	= 'user';
+		$log_extra	= "For User {$screen_name}";
+			
+		$this->parameters['screen_name'] = $screen_name;
 		
 		$this->EE->TMPL->log_item("Using '{$timeline}' Twitter Timeline {$log_extra}");
 		
 		
-		// build url
+		// build url - this is really just used for caching now
 		
-		$url = $this->base_url.$timeline.'_timeline.xml';
+		$url = $timeline.'_timeline';
 		
 		if (count($this->parameters))
 		{
@@ -373,30 +371,31 @@ class Twitter_timeline {
 	 */
 	function _fetch_data($url)
 	{
-		$rawxml			= '';
-		$cached_xml		= $this->_check_cache($url);
+		$rawjson			= '';
+		$cached_json		= $this->_check_cache($url);
 		
-		if ($this->cache_expired OR ! $cached_xml)
+		if ($this->cache_expired OR ! $cached_json)
 		{
 			$this->EE->TMPL->log_item("Fetching Twitter timeline remotely");
 			
 			if ( function_exists('curl_init'))
 			{
-				$rawxml = $this->_curl_fetch($url); 
+				$rawjson = $this->_curl_fetch($url); 
 			}
 			else
 			{
-				$rawxml = $this->_fsockopen_fetch($url);
+				// Twitter OAuth requires cURL
+				$this->EE->TMPL->log_item("Twitter Timeline Error: Twitter OAuth requires cURL");
 			}
 		}
 		
 		// Attempt to parse the data we have
-		$xml_obj = $this->_check_xml($rawxml);
+		$json_obj = $this->_check_json($rawjson);
 		
-		if ( ! $xml_obj)
+		if ( ! $json_obj)
 		{
 			// Did we try to grab new data? Tell them that it failed.
-			if ( ! $cached_xml OR $this->cache_expired)
+			if ( ! $cached_json OR $this->cache_expired)
 			{
 				$this->EE->TMPL->log_item("Twitter Timeline Error: Unable to retrieve statuses from Twitter.com");
 				
@@ -404,13 +403,13 @@ class Twitter_timeline {
 				// We definitely need to write a cache file so we don't continue
 				// to ask Twitter for data on every request.
 
-				if ( ! $cached_xml && $this->rate_limit_hit)
+				if ( ! $cached_json && $this->rate_limit_hit)
 				{
-					$this->_write_cache($rawxml, $url);
+					$this->_write_cache($rawjson, $url);
 				}
 				
 				// Try to parse cache? Is it worth it?
-				if ($this->use_stale != 'yes' OR ! $cached_xml)
+				if ($this->use_stale != 'yes' OR ! $cached_json)
 				{
 					return FALSE;
 				}
@@ -424,7 +423,7 @@ class Twitter_timeline {
 			
 			
 			// Check the cache
-			$xml_obj = $this->_check_xml($cached_xml);
+			$json_obj = $this->_check_json($cached_json);
 			
 			
 			// If we're hitting twitter's rate limit,
@@ -433,10 +432,10 @@ class Twitter_timeline {
 			
 			if ($this->rate_limit_hit && $this->cache_expired)
 			{
-				$this->_write_cache($cached_xml, $url);
+				$this->_write_cache($cached_json, $url);
 			}
 				
-			if ( ! $xml_obj)
+			if ( ! $json_obj)
 			{
 				$this->EE->TMPL->log_item("Twitter Timeline Error: Invalid Cache File");
 				return FALSE;
@@ -445,12 +444,11 @@ class Twitter_timeline {
 		else
 		{
 			// We have (valid) new data - cache it
-			$this->_write_cache($rawxml, $url);			
+			$this->_write_cache($rawjson, $url);			
 		}
 
 		// Grab the statuses
-		$statuses = $this->_parse_xml($xml_obj);
-		
+		$statuses = $json_obj;
 		
 		if ( ! is_array($statuses) OR count($statuses) == 0)
 		{
@@ -463,43 +461,35 @@ class Twitter_timeline {
 	// --------------------------------------------------------------------
 	
 	/**
-	 * Check XML
+	 * Check JSON
 	 *
-	 * Checks the XML for validity and also looks for errors in the data.
+	 * Checks the JSON for validity and also looks for errors in the data.
 	 *
 	 * @access	public
 	 * @param	object
 	 * @return	array
 	 */
-	function _check_xml($rawxml)
+	function _check_json($rawjson)
 	{
-		if ($rawxml == '' OR substr($rawxml, 0, 5) != "<?xml")
+		if ($rawjson == '')
 		{
 			return FALSE;
 		}
 		
-		$this->EE->load->library('xmlparser');
-		
-		$xml_obj = $this->EE->xmlparser->parse_xml($rawxml);
-		
-		
-		if ($xml_obj === FALSE)
+		// Parse json string into array
+		$json_obj = json_decode($rawjson, TRUE);
+	
+		if ($json_obj === FALSE || $json_obj === NULL)
 		{
 			return FALSE;
 		}
 		
 		// Check for error response
-		// Error tag in XML response could be in at least one of two places since
-		// Twitter doesn't follow its own documentation here.
-		if (isset($xml_obj->children[0]) && $xml_obj->children[0]->tag == 'error')
+		if (isset($json_obj['errors']) && isset($json_obj['errors'][0]['message']))
 		{
-			$error = $xml_obj->children[0]->value;
+			$error = $json_obj['errors'][0]['message'];
 		}
-		elseif (isset($xml_obj->children[1]) && $xml_obj->children[1]->tag == 'error')
-		{
-			$error = $xml_obj->children[1]->value;
-		}
-		
+
 		if (isset($error))
 		{
 			$this->rate_limit_hit = TRUE;
@@ -507,59 +497,9 @@ class Twitter_timeline {
 			return FALSE;
 		}
 
-		return $xml_obj;
+		return $json_obj;
 	}
 	
-	// --------------------------------------------------------------------
-	
-	/**
-	 * Parse XML
-	 *
-	 * Preps the Twitter returned xml data
-	 *
-	 * @access	public
-	 * @param	object
-	 * @return	array
-	 */
-	function _parse_xml($xml_obj)
-	{
-		if ( ! is_array($xml_obj->children) OR count($xml_obj->children) == 0)
-		{
-			return FALSE;
-		}
-		
-		$statuses = array();
-		
-		foreach ($xml_obj->children as $key => $status)
-		{
-			foreach ($status->children as $ckey => $item)
-			{
-				if ($item->tag == 'user')
-				{
-					foreach ($item->children as $ukey => $uitem)
-					{
-						// prefix user's id and created_at so we don't conflict
-						if ($uitem->tag == 'id' OR $uitem->tag == 'created_at')
-						{
-							$uitem->tag = 'user_'.$uitem->tag;
-						}
-						
-						$statuses[$key][$item->tag][$uitem->tag] = $uitem->value;
-					}
-				}
-				elseif ($item->tag == 'entities')
-				{
-					$statuses[$key][$item->tag] = $this->_parse_entities($item->children);
-				}
-				else
-				{
-					$statuses[$key][$item->tag] = $item->value;
-				}
-			}
-		}
-		
-		return $statuses;
-	}
 
 	// --------------------------------------------------------------------
 	
@@ -722,6 +662,7 @@ class Twitter_timeline {
 		// Do OAuth request if settings are entered and a screen_name tag param was passed
 		// https://dev.twitter.com/docs/auth/oauth/single-user-with-examples
 		// https://github.com/abraham/twitteroauth
+		// Updated for api v1.1 - https://dev.twitter.com/docs/api/1.1
 		if($this->consumer_key != '' && $this->consumer_secret != '' && $this->access_token  != '' &&  $this->access_token_secret  != '' && isset($this->parameters['screen_name']))
 		{
 			if (! class_exists('TwitterOAuth'))
@@ -731,85 +672,29 @@ class Twitter_timeline {
 
 			$connection = new TwitterOAuth($this->consumer_key, $this->consumer_secret, $this->access_token, $this->access_token_secret);
 			
-			$connection->format = 'xml';
+			$connection->format = 'json';
+			$connection->decode_json = FALSE;
 			
 			$data = $connection->get("statuses/user_timeline", $this->parameters);
 
 			$this->EE->TMPL->log_item("Twitter Timeline connecting using OAuth.");
 
-			if(isset($connection->http_header))
+			// If status is ok or over the rate limit
+			if($connection->http_code == 200 || $connection->http_code == 429)
 			{
 				// Log some rate limit info while we're here to help for debugging
-				$rate_limit = $connection->http_header['x_ratelimit_limit'];
-				$rate_limit_remaining = $connection->http_header['x_ratelimit_remaining'];
-				$rate_limit_reset = $connection->http_header['x_ratelimit_reset'];
+				$rate_limit = $connection->http_header['x_rate_limit_limit'];
+				$rate_limit_remaining = $connection->http_header['x_rate_limit_remaining'];
+				$rate_limit_reset = $connection->http_header['x_rate_limit_reset'];
 
-				$this->EE->TMPL->log_item("Twitter Timeline OAuth rate limit is at {$rate_limit_remaining} of {$rate_limit}: Next reset at {$this->EE->localize->set_human_time($rate_limit_reset)}");
+				$this->EE->TMPL->log_item("Twitter Timeline: OAuth rate limit is at {$rate_limit_remaining} of {$rate_limit}: Next reset at {$this->EE->localize->set_human_time($rate_limit_reset)}");
 			}
 		}
-		// Default curl request
 		else
 		{
-			$ch = curl_init(); 
-			curl_setopt($ch, CURLOPT_URL, $url); 
-			curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
-			curl_setopt($ch, CURLOPT_FRESH_CONNECT, 1);
-
-			// The maximum number of seconds to allow cURL functions to execute. 
-			curl_setopt($ch, CURLOPT_TIMEOUT, $this->time_limit);
-			
-			$data = curl_exec($ch);
-			
-			curl_close($ch);
+			$this->EE->TMPL->log_item("Twitter Timeline: Non-authenticated requests are no longer allowed. OAuth settings must not be empty.");
 		}
 
-		return $data;
-	}
-
-	// --------------------------------------------------------------------
-	
-	/**
-	 * fsockopen Fetch
-	 *
-	 * Fetch Twitter statuses using fsockopen
-	 *
-	 * @access	public
-	 * @param	string
-	 * @return	string
-	 */
-	function _fsockopen_fetch($url)
-	{
-		$target = parse_url($url);
-
-		$data = '';
-
-		$fp = fsockopen($target['host'], 80, $error_num, $error_str, $this->time_limit); 
-
-		if (is_resource($fp))
-		{
-			fputs($fp, "GET {$url} HTTP/1.0\r\n");
-			fputs($fp, "Host: {$target['host']}\r\n");
-			fputs($fp, "User-Agent: EE/EllisLab PHP/" . phpversion() . "\r\n\r\n");
-
-		    $headers = TRUE;
-
-		    while ( ! feof($fp))
-		    {
-		        $line = fgets($fp, 4096);
-
-		        if ($headers === FALSE)
-		        {
-		            $data .= $line;
-		        }
-		        elseif (trim($line) == '')
-		        {
-		            $headers = FALSE;
-		        }
-		    }
-
-		    fclose($fp); 
-		}
-		
 		return $data;
 	}
 
@@ -870,7 +755,7 @@ class Twitter_timeline {
 		------------------
 
 		screen_name="ellislab"
-		- The twitter name of the timeline to show. Optional, defaults to the public timeline.
+		- The twitter name of the timeline to show. Required for Twitter API v1.1.
 		
 		limit="5"
 		- Number of status messages to limit to.  Default (and maximum value) is 20.
@@ -922,7 +807,7 @@ class Twitter_timeline {
 		------------------
 		CHANGELOG:
 		------------------
-		2013-03-05: Modified by SurpriseHighway to use the Twitter Rest API v1.1 for authenticated requests. Note that unauthenticated requests are about to be retired: https://dev.twitter.com/blog/planning-for-api-v1-retirement
+		2013-03-05: Modified by SurpriseHighway to use the Twitter Rest API v1.1 for authenticated requests using JSON instead of XML. Note that unauthenticated requests are being retired so this now only supports OAuth method: https://dev.twitter.com/blog/planning-for-api-v1-retirement
 		2013-01-15: Modified by SurpriseHighway to include OAuth authentication.
 		Version 1.4.9 - Add target attributes on the links in tweets.
 		Version 1.4.8 - Made {status_relative_date} fuzzy for more Twitter-like relative dates.
